@@ -3,7 +3,7 @@ import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getNextWallet, connection } from './walletManager.js';
+import { getNextWallet, connection, incrementWalletLaunches } from './walletManager.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -73,7 +73,7 @@ async function getAnnoyingImage() {
     return null;
 }
 
-async function launchAnnoyingCoin(triggerTx = null) {
+async function launchAnnoyingCoin(triggerTx = null, triggerBuyAmount = 0) {
     console.log('\n🚀 LAUNCHING NEW ANNOYING COIN! 🚀\n');
 
     try {
@@ -174,6 +174,9 @@ async function launchAnnoyingCoin(triggerTx = null) {
         console.log(`🔗 Transaction: https://solscan.io/tx/${signature}`);
         console.log(`🪙 Token: https://pump.fun/${mintKeypair.publicKey.toBase58()}`);
 
+        // Increment wallet launch count
+        incrementWalletLaunches(wallet.publicKey);
+
         return {
             success: true,
             signature,
@@ -182,6 +185,7 @@ async function launchAnnoyingCoin(triggerTx = null) {
             symbol: tokenSymbol,
             wallet: wallet.publicKey,
             triggerTx,
+            triggerBuyAmount,
             timestamp: Date.now()
         };
 

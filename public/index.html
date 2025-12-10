@@ -396,7 +396,15 @@
             </div>
             <div class="stat-card">
                 <div class="stat-number" id="wallet-count">0</div>
-                <div class="stat-label">WALLETS ROTATING 🔄</div>
+                <div class="stat-label">CHILD WALLETS 🔄</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="master-balance">0</div>
+                <div class="stat-label">MASTER SOL 💰</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="min-buy">0.15</div>
+                <div class="stat-label">MIN BUY (SOL) 🎯</div>
             </div>
             <div class="stat-card">
                 <div class="stat-number" id="monitoring-status">
@@ -500,7 +508,16 @@
                 const data = await response.json();
 
                 document.getElementById('total-launches').textContent = data.totalLaunches || 0;
-                document.getElementById('wallet-count').textContent = data.wallets?.length || 0;
+                document.getElementById('wallet-count').textContent = data.wallets?.children?.length || 0;
+                document.getElementById('min-buy').textContent = data.minBuyAmount || 0.15;
+
+                // Master wallet balance
+                if (data.wallets?.master) {
+                    const bal = typeof data.wallets.master.balance === 'number'
+                        ? data.wallets.master.balance.toFixed(2)
+                        : '?';
+                    document.getElementById('master-balance').textContent = bal;
+                }
 
                 const statusIndicator = document.querySelector('.status-indicator');
                 const statusText = document.getElementById('status-text');
@@ -513,32 +530,54 @@
                     statusText.textContent = 'OFFLINE';
                 }
 
-                // Update wallet list
+                // Update wallet list (master + children)
                 const walletList = document.getElementById('wallet-list');
-                if (data.wallets && data.wallets.length > 0) {
-                    walletList.innerHTML = data.wallets.map(w => `
+                let walletHtml = '';
+
+                // Master wallet
+                if (data.wallets?.master) {
+                    const m = data.wallets.master;
+                    walletHtml += `
+                        <div class="wallet-item" style="border-color: #0f0; background: #1a1a2e;">
+                            <span>👑 MASTER</span>
+                            <span>${m.publicKey.slice(0, 8)}...${m.publicKey.slice(-8)}</span>
+                            <span style="color: #0f0;">${typeof m.balance === 'number' ? m.balance.toFixed(4) : '?'} SOL</span>
+                        </div>
+                    `;
+                }
+
+                // Child wallets
+                if (data.wallets?.children && data.wallets.children.length > 0) {
+                    walletHtml += data.wallets.children.map((w, i) => `
                         <div class="wallet-item">
-                            <span>${w.publicKey.slice(0, 8)}...${w.publicKey.slice(-8)}</span>
-                            <span>${typeof w.balance === 'number' ? w.balance.toFixed(4) : '?'} SOL</span>
-                            <span>Used: ${w.usageCount}x</span>
+                            <span>#${i + 1}</span>
+                            <span>${w.publicKey.slice(0, 6)}...${w.publicKey.slice(-4)}</span>
+                            <span>${typeof w.balance === 'number' ? w.balance.toFixed(3) : '?'} SOL</span>
+                            <span>${w.launchCount}/${w.maxLaunches} launches</span>
                         </div>
                     `).join('');
-                } else {
-                    walletList.innerHTML = '<div class="wallet-item">No wallets configured</div>';
                 }
+
+                walletList.innerHTML = walletHtml || '<div class="wallet-item">No wallets yet - will generate on first launch!</div>';
 
                 // Update launches list
                 const launchesList = document.getElementById('launches-list');
                 if (data.recentLaunches && data.recentLaunches.length > 0) {
                     launchesList.innerHTML = data.recentLaunches.map(l => `
                         <div class="launch-item">
-                            🚀 <strong>${l.name}</strong> (${l.symbol})<br>
+                            🚀 <strong>${l.name || 'Annoying Coin'}</strong> (${l.symbol || 'ANNOY'})<br>
                             <a href="https://pump.fun/${l.mint}" target="_blank">pump.fun/${l.mint.slice(0, 8)}...</a> |
                             <a href="https://solscan.io/tx/${l.signature}" target="_blank">TX</a>
                             <br>
-                            <small>Wallet: ${l.wallet?.slice(0, 8)}... | ${new Date(l.timestamp).toLocaleString()}</small>
+                            <small>
+                                Triggered by: ${l.triggerBuyAmount ? l.triggerBuyAmount.toFixed(3) + ' SOL buy' : 'unknown'} |
+                                Wallet: ${l.wallet?.slice(0, 8)}... |
+                                ${new Date(l.timestamp).toLocaleString()}
+                            </small>
                         </div>
                     `).join('');
+                } else {
+                    launchesList.innerHTML = '<div class="launch-item">No launches yet... waiting for buys above min threshold!</div>';
                 }
 
             } catch (err) {
