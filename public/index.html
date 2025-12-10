@@ -374,8 +374,12 @@
 
     <div class="container">
         <header class="header">
+            <img src="/logo.png" alt="Annoying Coin" style="width: 150px; height: 150px; border-radius: 50%; border: 5px solid #fff; box-shadow: 0 0 30px #f0f, 0 0 60px #0ff; animation: pulse 1s ease infinite; margin-bottom: 20px;">
             <h1 class="logo glitch" data-text="ANNOYING COIN">ANNOYING COIN</h1>
             <p class="subtitle">$ANNOY - THE MOST ANNOYING TOKEN ON SOLANA</p>
+            <a href="https://x.com/i/communities/1998788435813814483" target="_blank" style="display: inline-block; margin-top: 20px; padding: 15px 30px; background: #000; color: #fff; font-family: 'Bangers', cursive; font-size: 20px; text-decoration: none; border: 3px solid #fff; border-radius: 8px; box-shadow: 0 0 20px #1da1f2; transition: all 0.2s;">
+                𝕏 JOIN THE COMMUNITY
+            </a>
         </header>
 
         <div class="annoying-box">
@@ -383,9 +387,10 @@
                 🔥 HOW IT WORKS 🔥
             </h2>
             <p style="font-size: 20px; text-align: center; line-height: 1.8;">
-                Every time someone <strong>BUYS</strong> the monitored token...<br>
+                Every time someone <strong>BUYS 1+ SOL</strong> (after fees) of $ANNOY...<br>
                 We <strong>AUTOMATICALLY LAUNCH</strong> a new annoying coin! 🚀<br>
-                <span style="font-size: 16px; color: #666;">(Yes, really. We're THAT annoying.)</span>
+                <span style="font-size: 16px; color: #333;">New dev wallet each time to bypass blacklisting.</span><br>
+                <span style="font-size: 16px; color: #333;">Random token names to bypass blacklisting.</span>
             </p>
         </div>
 
@@ -396,22 +401,11 @@
             </div>
             <div class="stat-card">
                 <div class="stat-number" id="wallet-count">0</div>
-                <div class="stat-label">CHILD WALLETS 🔄</div>
+                <div class="stat-label">DEV WALLETS 🔄</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number" id="master-balance">0</div>
-                <div class="stat-label">MASTER SOL 💰</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="min-buy">0.15</div>
+                <div class="stat-number" id="min-buy">1</div>
                 <div class="stat-label">MIN BUY (SOL) 🎯</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="monitoring-status">
-                    <span class="status-indicator status-inactive"></span>
-                    <span id="status-text">OFFLINE</span>
-                </div>
-                <div class="stat-label">MONITORING STATUS 👀</div>
             </div>
         </div>
 
@@ -425,20 +419,10 @@
         <div class="disclaimer">
             ⚠️ DISCLAIMER: This is NOT financial advice. This is just annoying. DYOR. NFA. We are not responsible for any annoyance caused. ⚠️
         </div>
-
-        <div class="annoying-box" style="transform: rotate(2deg);">
-            <h2 style="text-align: center; font-size: 24px;">WALLET ROTATION 🔄</h2>
-            <p style="text-align: center; margin: 10px 0;">
-                We rotate through multiple wallets to keep things interesting!
-            </p>
-            <div class="wallet-list" id="wallet-list">
-                Loading wallets...
-            </div>
-        </div>
     </div>
 
     <footer>
-        <p>ANNOYING COIN © 2024 - BUILT DIFFERENT 😤</p>
+        <p>ANNOYING COIN © 2025 - BUILT DIFFERENT 😤</p>
         <p style="margin-top: 10px; color: #666;">Powered by pure annoyance and Solana</p>
     </footer>
 
@@ -509,56 +493,7 @@
 
                 document.getElementById('total-launches').textContent = data.totalLaunches || 0;
                 document.getElementById('wallet-count').textContent = data.wallets?.children?.length || 0;
-                document.getElementById('min-buy').textContent = data.minBuyAmount || 0.15;
-
-                // Master wallet balance
-                if (data.wallets?.master) {
-                    const bal = typeof data.wallets.master.balance === 'number'
-                        ? data.wallets.master.balance.toFixed(2)
-                        : '?';
-                    document.getElementById('master-balance').textContent = bal;
-                }
-
-                const statusIndicator = document.querySelector('.status-indicator');
-                const statusText = document.getElementById('status-text');
-
-                if (data.isMonitoring) {
-                    statusIndicator.className = 'status-indicator status-active';
-                    statusText.textContent = 'ACTIVE';
-                } else {
-                    statusIndicator.className = 'status-indicator status-inactive';
-                    statusText.textContent = 'OFFLINE';
-                }
-
-                // Update wallet list (master + children)
-                const walletList = document.getElementById('wallet-list');
-                let walletHtml = '';
-
-                // Master wallet
-                if (data.wallets?.master) {
-                    const m = data.wallets.master;
-                    walletHtml += `
-                        <div class="wallet-item" style="border-color: #0f0; background: #1a1a2e;">
-                            <span>👑 MASTER</span>
-                            <span>${m.publicKey.slice(0, 8)}...${m.publicKey.slice(-8)}</span>
-                            <span style="color: #0f0;">${typeof m.balance === 'number' ? m.balance.toFixed(4) : '?'} SOL</span>
-                        </div>
-                    `;
-                }
-
-                // Child wallets
-                if (data.wallets?.children && data.wallets.children.length > 0) {
-                    walletHtml += data.wallets.children.map((w, i) => `
-                        <div class="wallet-item">
-                            <span>#${i + 1}</span>
-                            <span>${w.publicKey.slice(0, 6)}...${w.publicKey.slice(-4)}</span>
-                            <span>${typeof w.balance === 'number' ? w.balance.toFixed(3) : '?'} SOL</span>
-                            <span>${w.launchCount}/${w.maxLaunches} launches</span>
-                        </div>
-                    `).join('');
-                }
-
-                walletList.innerHTML = walletHtml || '<div class="wallet-item">No wallets yet - will generate on first launch!</div>';
+                document.getElementById('min-buy').textContent = Math.floor(data.minBuyAmount) || 1;
 
                 // Update launches list
                 const launchesList = document.getElementById('launches-list');
@@ -571,7 +506,6 @@
                             <br>
                             <small>
                                 Triggered by: ${l.triggerBuyAmount ? l.triggerBuyAmount.toFixed(3) + ' SOL buy' : 'unknown'} |
-                                Wallet: ${l.wallet?.slice(0, 8)}... |
                                 ${new Date(l.timestamp).toLocaleString()}
                             </small>
                         </div>
@@ -585,9 +519,9 @@
             }
         }
 
-        // Update stats every 5 seconds
+        // Update stats every 2 seconds for real-time feel
         updateStats();
-        setInterval(updateStats, 5000);
+        setInterval(updateStats, 2000);
 
         // Random cursor trail
         document.addEventListener('mousemove', (e) => {

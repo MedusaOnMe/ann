@@ -1,5 +1,4 @@
 import { VersionedTransaction, Keypair } from '@solana/web3.js';
-import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -11,17 +10,18 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Annoying names and descriptions
-const ANNOYING_ADJECTIVES = [
-    'Super', 'Mega', 'Ultra', 'Hyper', 'Maximum', 'Extreme', 'Infinite',
-    'Turbo', 'Giga', 'Omega', 'Alpha', 'Epic', 'Legendary', 'Divine',
-    'Cosmic', 'Quantum', 'Nuclear', 'Atomic', 'Plasma', 'Laser'
-];
-
-const ANNOYING_SUFFIXES = [
-    'Inu', 'Moon', 'Rocket', 'Gem', 'Diamond', 'Gold', 'King',
-    'Doge', 'Pepe', 'Chad', 'Based', 'Pump', 'Send', 'Lambo',
-    'Elon', 'Trump', 'Wojak', 'Frog', 'Cat', 'Dog'
+// Token names to cycle through
+const TOKEN_NAMES = [
+    'Annoying Coin',
+    'Are You Annoyed?',
+    'This Is Annoying',
+    'Annoyed Yet?',
+    'Buy Annoying Coin',
+    'Annoy Annoy Annoy',
+    'Annoying Coinn',
+    'This One Doesnt Say It',
+    'Cant Block Me',
+    'Guess Whos Back'
 ];
 
 const ANNOYING_DESCRIPTIONS = [
@@ -38,15 +38,19 @@ const ANNOYING_DESCRIPTIONS = [
 ];
 
 function generateAnnoyingName() {
-    const adj = ANNOYING_ADJECTIVES[Math.floor(Math.random() * ANNOYING_ADJECTIVES.length)];
-    const suffix = ANNOYING_SUFFIXES[Math.floor(Math.random() * ANNOYING_SUFFIXES.length)];
-    return `${adj} Annoying ${suffix}`;
+    return TOKEN_NAMES[Math.floor(Math.random() * TOKEN_NAMES.length)];
 }
 
 function generateAnnoyingSymbol() {
-    const chars = 'ANNOY';
+    const symbols = [
+        'ANNOY', 'ANOY', 'ANNOYD', 'NNOYING', 'ANOYING', 'ANNOI',
+        'PEST', 'BOTHER', 'IRK', 'VEX', 'NUIS', 'HASSLE',
+        'GNAT', 'BUZZ', 'NAG', 'POKE', 'ITCH', 'GRIND',
+        'BACK', 'GUESS', 'BLOCK', 'CANT', 'TRY'
+    ];
+    const base = symbols[Math.floor(Math.random() * symbols.length)];
     const extra = Math.floor(Math.random() * 1000);
-    return `${chars}${extra}`;
+    return `${base}${extra}`;
 }
 
 function generateAnnoyingDescription() {
@@ -102,16 +106,18 @@ async function launchAnnoyingCoin(triggerTx = null, triggerBuyAmount = 0) {
         const imageBuffer = await getAnnoyingImage();
         if (imageBuffer) {
             const blob = new Blob([imageBuffer], { type: 'image/png' });
-            formData.append('file', blob, 'annoying.png');
+            formData.append('file', blob, 'image.png');
         }
 
         formData.append('name', tokenName);
         formData.append('symbol', tokenSymbol);
         formData.append('description', tokenDescription);
-        formData.append('twitter', process.env.TWITTER_URL || 'https://twitter.com/annoyingcoin');
-        formData.append('telegram', process.env.TELEGRAM_URL || '');
-        formData.append('website', process.env.WEBSITE_URL || '');
         formData.append('showName', 'true');
+
+        // Only add socials if they have values
+        if (process.env.TWITTER_URL) formData.append('twitter', process.env.TWITTER_URL);
+        if (process.env.TELEGRAM_URL) formData.append('telegram', process.env.TELEGRAM_URL);
+        if (process.env.WEBSITE_URL) formData.append('website', process.env.WEBSITE_URL);
 
         // Upload metadata to IPFS via pump.fun
         console.log('📤 Uploading metadata to IPFS...');

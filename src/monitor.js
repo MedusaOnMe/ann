@@ -1,5 +1,4 @@
 import WebSocket from 'ws';
-import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { launchAnnoyingCoin } from './launcher.js';
 import { saveStats, getStats, saveLaunch, getRecentLaunches } from './firebase.js';
 import dotenv from 'dotenv';
@@ -7,10 +6,15 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 let isMonitoring = false;
-let ws = null;
+let wsBondingCurve = null;  // Free WS for pre-migration tokens
+let wsPumpSwap = null;       // Paid WS for post-migration tokens
 let targetCA = null;
+
+// PumpPortal API key for pump-swap (post-migration)
+const PUMPPORTAL_API_KEY = process.env.PUMPPORTAL_API_KEY;
 let totalLaunches = 0;
 let recentLaunches = [];
+let sessionLaunches = 0; // Track launches in current session (for test mode)
 
 // Cooldown to prevent spam launches
 let lastLaunchTime = 0;
@@ -18,6 +22,10 @@ const LAUNCH_COOLDOWN = parseInt(process.env.LAUNCH_COOLDOWN_MS || '30000'); // 
 
 // Minimum buy amount to trigger launch (in SOL)
 const MIN_BUY_AMOUNT = parseFloat(process.env.MIN_BUY_SOL || '0.15');
+
+// TEST MODE - easily revertible by setting TEST_MODE=false in .env
+const TEST_MODE = process.env.TEST_MODE === 'true';
+const MAX_TEST_LAUNCHES = parseInt(process.env.MAX_TEST_LAUNCHES || '1');
 
 // Track processed transactions to avoid duplicates
 const processedTxs = new Set();
@@ -62,17 +70,22 @@ async function processTradeEvent(trade) {
         arr.slice(-500).forEach(tx => processedTxs.add(tx));
     }
 
-    // Get buy amount in SOL
-    const buyAmountSol = trade.solAmount / LAMPORTS_PER_SOL;
+    // Get buy amount in SOL (already in SOL, not lamports)
+    const buyAmountSol = trade.solAmount;
+
+    // Check minimum buy amount (skip silently if below threshold)
+    if (buyAmountSol < MIN_BUY_AMOUNT) {
+        return;
+    }
 
     console.log(`\n🔔 BUY detected on target CA!`);
     console.log(`💰 Amount: ${buyAmountSol.toFixed(4)} SOL`);
     console.log(`👤 Buyer: ${trade.traderPublicKey?.slice(0, 8)}...`);
     console.log(`🔗 TX: ${signature.slice(0, 20)}...`);
 
-    // Check minimum buy amount
-    if (buyAmountSol < MIN_BUY_AMOUNT) {
-        console.log(`❌ Buy amount ${buyAmountSol.toFixed(4)} SOL is below minimum ${MIN_BUY_AMOUNT} SOL - SKIPPED`);
+    // Check test mode limit
+    if (TEST_MODE && sessionLaunches >= MAX_TEST_LAUNCHES) {
+        console.log(`🧪 TEST MODE: Already launched ${sessionLaunches}/${MAX_TEST_LAUNCHES} coins this session - SKIPPED`);
         return;
     }
 
@@ -84,7 +97,7 @@ async function processTradeEvent(trade) {
         return;
     }
 
-    console.log(`✅ Buy amount ${buyAmountSol.toFixed(4)} SOL meets minimum ${MIN_BUY_AMOUNT} SOL - LAUNCHING!`);
+    console.log(`✅ LAUNCHING!`);
 
     // Launch a new annoying coin!
     lastLaunchTime = Date.now();
@@ -92,8 +105,13 @@ async function processTradeEvent(trade) {
 
     if (result.success) {
         totalLaunches++;
+        sessionLaunches++;
         result.triggerBuyAmount = buyAmountSol;
         result.triggerBuyer = trade.traderPublicKey;
+
+        if (TEST_MODE) {
+            console.log(`🧪 TEST MODE: Launched ${sessionLaunches}/${MAX_TEST_LAUNCHES} coins this session`);
+        }
 
         recentLaunches.unshift(result);
         if (recentLaunches.length > 100) {
@@ -108,13 +126,13 @@ async function processTradeEvent(trade) {
     }
 }
 
-function connectWebSocket() {
-    console.log('🔌 Connecting to PumpPortal WebSocket...');
+function createWebSocket(name, url, reconnectFn) {
+    console.log(`🔌 [${name}] Connecting...`);
 
-    ws = new WebSocket('wss://pumpportal.fun/api/data');
+    const ws = new WebSocket(url);
 
     ws.on('open', () => {
-        console.log('✅ WebSocket connected!');
+        console.log(`✅ [${name}] Connected!`);
 
         // Subscribe to trades for our target token
         const subscribeMsg = {
@@ -123,7 +141,7 @@ function connectWebSocket() {
         };
 
         ws.send(JSON.stringify(subscribeMsg));
-        console.log(`📡 Subscribed to trades for: ${targetCA.slice(0, 8)}...`);
+        console.log(`📡 [${name}] Subscribed to: ${targetCA.slice(0, 8)}...`);
     });
 
     ws.on('message', (data) => {
@@ -135,23 +153,51 @@ function connectWebSocket() {
                 processTradeEvent(message);
             }
         } catch (err) {
-            // Ignore parse errors for non-JSON messages
+            // Ignore parse errors
         }
     });
 
     ws.on('error', (error) => {
-        console.error('❌ WebSocket error:', error.message);
+        console.error(`❌ [${name}] Error:`, error.message);
     });
 
     ws.on('close', () => {
-        console.log('🔌 WebSocket disconnected');
+        console.log(`🔌 [${name}] Disconnected`);
 
         // Reconnect after 5 seconds if still monitoring
         if (isMonitoring) {
-            console.log('🔄 Reconnecting in 5 seconds...');
-            setTimeout(connectWebSocket, 5000);
+            console.log(`🔄 [${name}] Reconnecting in 5s...`);
+            setTimeout(reconnectFn, 5000);
         }
     });
+
+    return ws;
+}
+
+function connectBondingCurveWS() {
+    wsBondingCurve = createWebSocket(
+        'Bonding Curve',
+        'wss://pumpportal.fun/api/data',
+        connectBondingCurveWS
+    );
+}
+
+function connectPumpSwapWS() {
+    if (!PUMPPORTAL_API_KEY) {
+        console.log('⚠️  No PUMPPORTAL_API_KEY - pump-swap monitoring disabled');
+        return;
+    }
+    wsPumpSwap = createWebSocket(
+        'Pump-Swap',
+        `wss://pumpportal.fun/api/data?api-key=${PUMPPORTAL_API_KEY}`,
+        connectPumpSwapWS
+    );
+}
+
+function connectWebSockets() {
+    // Connect to both WebSockets for seamless coverage
+    connectBondingCurveWS();  // Free - pre-migration tokens
+    connectPumpSwapWS();       // Paid - post-migration tokens
 }
 
 async function startMonitoring(ca) {
@@ -169,17 +215,24 @@ async function startMonitoring(ca) {
     console.log(`\n🎯 Starting to monitor CA: ${ca}`);
     console.log(`⏱️  Launch cooldown: ${LAUNCH_COOLDOWN / 1000}s`);
     console.log(`💰 Minimum buy amount: ${MIN_BUY_AMOUNT} SOL`);
+    if (TEST_MODE) {
+        console.log(`🧪 TEST MODE ENABLED: Max ${MAX_TEST_LAUNCHES} launch(es) this session`);
+    }
 
-    // Connect to PumpPortal WebSocket
-    connectWebSocket();
+    // Connect to both PumpPortal WebSockets
+    connectWebSockets();
 }
 
 function stopMonitoring() {
     isMonitoring = false;
 
-    if (ws) {
-        ws.close();
-        ws = null;
+    if (wsBondingCurve) {
+        wsBondingCurve.close();
+        wsBondingCurve = null;
+    }
+    if (wsPumpSwap) {
+        wsPumpSwap.close();
+        wsPumpSwap = null;
     }
 
     saveStatsToFirebase();
@@ -194,7 +247,10 @@ function getStatus() {
         recentLaunches: recentLaunches.slice(0, 20),
         cooldownMs: LAUNCH_COOLDOWN,
         minBuyAmount: MIN_BUY_AMOUNT,
-        lastLaunchTime
+        lastLaunchTime,
+        testMode: TEST_MODE,
+        sessionLaunches,
+        maxTestLaunches: MAX_TEST_LAUNCHES
     };
 }
 
