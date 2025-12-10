@@ -33,8 +33,19 @@ const processedTxs = new Set();
 async function loadStatsFromFirebase() {
     try {
         const stats = await getStats();
-        totalLaunches = stats.totalLaunches || 0;
-        recentLaunches = await getRecentLaunches(20);
+        recentLaunches = await getRecentLaunches(100);
+
+        // Use the larger of stored count or actual launches (prevents data loss from sync issues)
+        const storedCount = stats.totalLaunches || 0;
+        const actualCount = recentLaunches.length;
+        totalLaunches = Math.max(storedCount, actualCount);
+
+        // If we corrected the count, save it back
+        if (totalLaunches > storedCount) {
+            console.log(`📊 Correcting launch count: ${storedCount} → ${totalLaunches}`);
+            await saveStatsToFirebase();
+        }
+
         console.log(`📊 Loaded stats from Firebase: ${totalLaunches} total launches`);
     } catch (err) {
         console.error('Failed to load stats:', err.message);

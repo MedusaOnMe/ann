@@ -19,9 +19,9 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
 // API Routes
-app.get('/api/status', (req, res) => {
+app.get('/api/status', async (req, res) => {
     const status = getStatus();
-    const walletStats = getWalletStats();
+    const walletStats = await getWalletStats();
     res.json({
         ...status,
         wallets: walletStats
