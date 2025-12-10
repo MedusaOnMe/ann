@@ -1,76 +1,25 @@
 import { Keypair, Connection, LAMPORTS_PER_SOL, SystemProgram, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { saveWallet, getWallets, updateWalletLaunches as fbUpdateWalletLaunches } from './firebase.js';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const RPC_ENDPOINT = process.env.RPC_ENDPOINT || 'https://api.mainnet-beta.solana.com';
 const connection = new Connection(RPC_ENDPOINT, 'confirmed');
 
-// Config
-const MAX_LAUNCHES_PER_WALLET = parseInt(process.env.MAX_LAUNCHES_PER_WALLET || '5');
-const SOL_PER_WALLET = parseFloat(process.env.SOL_PER_WALLET || '0.3'); // SOL to transfer to each new wallet
-const MIN_MASTER_BALANCE = parseFloat(process.env.MIN_MASTER_BALANCE || '0.5'); // Keep at least this much in master
+// Config - Updated defaults
+const MAX_LAUNCHES_PER_WALLET = parseInt(process.env.MAX_LAUNCHES_PER_WALLET || '10');
+const SOL_PER_WALLET = parseFloat(process.env.SOL_PER_WALLET || '0.15');
+const MIN_MASTER_BALANCE = parseFloat(process.env.MIN_MASTER_BALANCE || '0.2');
 
 // Master wallet (the one you fund)
 let masterWallet = null;
 
-// Generated child wallets
+// Generated child wallets (in memory, synced with Firebase)
 let childWallets = [];
 let currentWalletIndex = 0;
-
-// Persistence file path
-const DATA_FILE = path.join(__dirname, '../data/wallets.json');
-
-function ensureDataDir() {
-    const dataDir = path.join(__dirname, '../data');
-    if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-    }
-}
-
-function loadData() {
-    ensureDataDir();
-    try {
-        if (fs.existsSync(DATA_FILE)) {
-            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-            childWallets = data.childWallets.map(w => ({
-                ...w,
-                keypair: Keypair.fromSecretKey(bs58.decode(w.privateKey))
-            }));
-            currentWalletIndex = data.currentWalletIndex || 0;
-            console.log(`📂 Loaded ${childWallets.length} existing child wallets`);
-            return true;
-        }
-    } catch (err) {
-        console.error('Failed to load wallet data:', err.message);
-    }
-    return false;
-}
-
-function saveData() {
-    ensureDataDir();
-    try {
-        const data = {
-            childWallets: childWallets.map(w => ({
-                publicKey: w.publicKey,
-                privateKey: bs58.encode(w.keypair.secretKey),
-                launchCount: w.launchCount,
-                createdAt: w.createdAt
-            })),
-            currentWalletIndex
-        };
-        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-    } catch (err) {
-        console.error('Failed to save wallet data:', err.message);
-    }
-}
+let isInitialized = false;
 
 function loadMasterWallet() {
     const masterKey = process.env.MASTER_WALLET;
@@ -86,6 +35,24 @@ function loadMasterWallet() {
     } catch (err) {
         console.error('❌ Failed to load MASTER_WALLET:', err.message);
         return false;
+    }
+}
+
+async function loadWalletsFromFirebase() {
+    if (isInitialized) return;
+
+    try {
+        const wallets = await getWallets();
+        childWallets = wallets.map(w => ({
+            keypair: Keypair.fromSecretKey(bs58.decode(w.privateKey)),
+            publicKey: w.publicKey,
+            launchCount: w.launchCount || 0,
+            createdAt: w.createdAt
+        }));
+        isInitialized = true;
+        console.log(`📂 Loaded ${childWallets.length} wallets from Firebase`);
+    } catch (err) {
+        console.error('Failed to load wallets from Firebase:', err.message);
     }
 }
 
@@ -118,7 +85,10 @@ async function generateNewWallet() {
     // Generate new keypair
     const newKeypair = Keypair.generate();
     const newPublicKey = newKeypair.publicKey.toBase58();
+    const newPrivateKey = bs58.encode(newKeypair.secretKey);
+
     console.log(`🆕 New wallet: ${newPublicKey.slice(0, 8)}...`);
+    console.log(`🔑 Private key saved to Firebase (encrypted)`);
 
     // Transfer SOL from master to new wallet
     const transferAmount = SOL_PER_WALLET * LAMPORTS_PER_SOL;
@@ -142,7 +112,7 @@ async function generateNewWallet() {
 
         console.log(`✅ Transfer complete: ${signature.slice(0, 20)}...`);
 
-        // Add to child wallets
+        // Create wallet object
         const newWallet = {
             keypair: newKeypair,
             publicKey: newPublicKey,
@@ -150,8 +120,16 @@ async function generateNewWallet() {
             createdAt: Date.now()
         };
 
+        // Save to Firebase (encrypted)
+        await saveWallet({
+            publicKey: newPublicKey,
+            privateKey: newPrivateKey,
+            launchCount: 0,
+            createdAt: Date.now()
+        });
+
+        // Add to local array
         childWallets.push(newWallet);
-        saveData();
 
         return newWallet;
 
@@ -167,9 +145,9 @@ async function getNextWallet() {
         loadMasterWallet();
     }
 
-    // Load existing wallets if not loaded
-    if (childWallets.length === 0) {
-        loadData();
+    // Load existing wallets from Firebase if not loaded
+    if (!isInitialized) {
+        await loadWalletsFromFirebase();
     }
 
     // Find a wallet with launches remaining
@@ -183,12 +161,12 @@ async function getNextWallet() {
             // Check if wallet still has balance
             try {
                 const balance = await connection.getBalance(wallet.keypair.publicKey);
-                if (balance > 0.05 * LAMPORTS_PER_SOL) { // Need at least 0.05 SOL
+                if (balance > 0.03 * LAMPORTS_PER_SOL) { // Need at least 0.03 SOL
                     availableWallet = wallet;
                     currentWalletIndex = idx;
                     break;
                 } else {
-                    console.log(`⚠️  Wallet ${wallet.publicKey.slice(0, 8)}... is low on funds, skipping`);
+                    console.log(`⚠️  Wallet ${wallet.publicKey.slice(0, 8)}... is low on funds (${(balance / LAMPORTS_PER_SOL).toFixed(4)} SOL), skipping`);
                 }
             } catch (err) {
                 console.error('Balance check error:', err.message);
@@ -198,7 +176,7 @@ async function getNextWallet() {
 
     // If no available wallet, generate a new one
     if (!availableWallet) {
-        console.log('📊 All wallets exhausted, generating new one...');
+        console.log('📊 All wallets exhausted or empty, generating new one...');
         availableWallet = await generateNewWallet();
         currentWalletIndex = childWallets.length - 1;
     }
@@ -208,16 +186,24 @@ async function getNextWallet() {
     return availableWallet;
 }
 
-function incrementWalletLaunches(publicKey) {
+async function incrementWalletLaunches(publicKey) {
     const wallet = childWallets.find(w => w.publicKey === publicKey);
     if (wallet) {
         wallet.launchCount++;
-        saveData();
+
+        // Update in Firebase
+        await fbUpdateWalletLaunches(publicKey, wallet.launchCount);
+
         console.log(`📈 Wallet ${publicKey.slice(0, 8)}... now at ${wallet.launchCount}/${MAX_LAUNCHES_PER_WALLET} launches`);
     }
 }
 
 async function getWalletStats() {
+    // Ensure wallets are loaded
+    if (!isInitialized) {
+        await loadWalletsFromFirebase();
+    }
+
     const stats = {
         master: null,
         children: [],
@@ -269,7 +255,6 @@ async function getWalletStats() {
 
 // Initialize on load
 loadMasterWallet();
-loadData();
 
 export {
     getNextWallet,
@@ -277,5 +262,6 @@ export {
     incrementWalletLaunches,
     connection,
     getMasterBalance,
-    MAX_LAUNCHES_PER_WALLET
+    MAX_LAUNCHES_PER_WALLET,
+    loadWalletsFromFirebase
 };

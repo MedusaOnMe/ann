@@ -1,22 +1,16 @@
-import { PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { connection } from './walletManager.js';
+import WebSocket from 'ws';
+import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { launchAnnoyingCoin } from './launcher.js';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { saveStats, getStats, saveLaunch, getRecentLaunches } from './firebase.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 let isMonitoring = false;
-let subscriptionId = null;
+let ws = null;
 let targetCA = null;
 let totalLaunches = 0;
 let recentLaunches = [];
-let processedSignatures = new Set();
 
 // Cooldown to prevent spam launches
 let lastLaunchTime = 0;
@@ -25,103 +19,62 @@ const LAUNCH_COOLDOWN = parseInt(process.env.LAUNCH_COOLDOWN_MS || '30000'); // 
 // Minimum buy amount to trigger launch (in SOL)
 const MIN_BUY_AMOUNT = parseFloat(process.env.MIN_BUY_SOL || '0.15');
 
-// Persistence file
-const STATS_FILE = path.join(__dirname, '../data/stats.json');
+// Track processed transactions to avoid duplicates
+const processedTxs = new Set();
 
-function ensureDataDir() {
-    const dataDir = path.join(__dirname, '../data');
-    if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-    }
-}
-
-function loadStats() {
-    ensureDataDir();
+async function loadStatsFromFirebase() {
     try {
-        if (fs.existsSync(STATS_FILE)) {
-            const data = JSON.parse(fs.readFileSync(STATS_FILE, 'utf8'));
-            totalLaunches = data.totalLaunches || 0;
-            recentLaunches = data.recentLaunches || [];
-            console.log(`📊 Loaded stats: ${totalLaunches} total launches`);
-        }
+        const stats = await getStats();
+        totalLaunches = stats.totalLaunches || 0;
+        recentLaunches = await getRecentLaunches(20);
+        console.log(`📊 Loaded stats from Firebase: ${totalLaunches} total launches`);
     } catch (err) {
         console.error('Failed to load stats:', err.message);
     }
 }
 
-function saveStats() {
-    ensureDataDir();
+async function saveStatsToFirebase() {
     try {
-        fs.writeFileSync(STATS_FILE, JSON.stringify({
+        await saveStats({
             totalLaunches,
-            recentLaunches: recentLaunches.slice(0, 100), // Keep last 100
-            lastUpdated: Date.now()
-        }, null, 2));
+            lastLaunchTime
+        });
     } catch (err) {
         console.error('Failed to save stats:', err.message);
     }
 }
 
-// Parse transaction to detect buy amount
-async function getBuyAmount(signature) {
-    try {
-        const txInfo = await connection.getTransaction(signature, {
-            commitment: 'confirmed',
-            maxSupportedTransactionVersion: 0
-        });
+async function processTradeEvent(trade) {
+    // Only process buys on our target CA
+    if (trade.mint !== targetCA) return;
+    if (trade.txType !== 'buy') return;
 
-        if (!txInfo || !txInfo.meta) {
-            return null;
-        }
+    const signature = trade.signature;
 
-        // Calculate SOL transferred by looking at balance changes
-        // For pump.fun buys, the buyer's SOL decreases
-        const preBalances = txInfo.meta.preBalances;
-        const postBalances = txInfo.meta.postBalances;
-
-        if (!preBalances || !postBalances || preBalances.length === 0) {
-            return null;
-        }
-
-        // The first account is usually the fee payer (buyer)
-        // Calculate how much SOL they spent (excluding fees)
-        const fee = txInfo.meta.fee || 5000;
-
-        // Look for the largest SOL decrease (excluding fee payer's fee)
-        let maxSpent = 0;
-
-        for (let i = 0; i < preBalances.length; i++) {
-            const spent = preBalances[i] - postBalances[i];
-            if (spent > fee) { // More than just the fee
-                const actualSpent = (spent - (i === 0 ? fee : 0)) / LAMPORTS_PER_SOL;
-                if (actualSpent > maxSpent) {
-                    maxSpent = actualSpent;
-                }
-            }
-        }
-
-        return maxSpent;
-
-    } catch (err) {
-        console.error('Error parsing transaction:', err.message);
-        return null;
-    }
-}
-
-async function processTransaction(signature) {
     // Skip if already processed
-    if (processedSignatures.has(signature)) {
-        return;
-    }
-    processedSignatures.add(signature);
+    if (processedTxs.has(signature)) return;
+    processedTxs.add(signature);
 
     // Keep set from growing too large
-    if (processedSignatures.size > 1000) {
-        const arr = Array.from(processedSignatures);
-        processedSignatures = new Set(arr.slice(-500));
+    if (processedTxs.size > 1000) {
+        const arr = Array.from(processedTxs);
+        processedTxs.clear();
+        arr.slice(-500).forEach(tx => processedTxs.add(tx));
     }
 
-    console.log(`\n🔔 New transaction detected: ${signature.slice(0, 20)}...`);
+    // Get buy amount in SOL
+    const buyAmountSol = trade.solAmount / LAMPORTS_PER_SOL;
+
+    console.log(`\n🔔 BUY detected on target CA!`);
+    console.log(`💰 Amount: ${buyAmountSol.toFixed(4)} SOL`);
+    console.log(`👤 Buyer: ${trade.traderPublicKey?.slice(0, 8)}...`);
+    console.log(`🔗 TX: ${signature.slice(0, 20)}...`);
+
+    // Check minimum buy amount
+    if (buyAmountSol < MIN_BUY_AMOUNT) {
+        console.log(`❌ Buy amount ${buyAmountSol.toFixed(4)} SOL is below minimum ${MIN_BUY_AMOUNT} SOL - SKIPPED`);
+        return;
+    }
 
     // Check cooldown
     const now = Date.now();
@@ -131,39 +84,74 @@ async function processTransaction(signature) {
         return;
     }
 
-    // Get buy amount
-    const buyAmount = await getBuyAmount(signature);
-
-    if (buyAmount === null) {
-        console.log('⚠️  Could not determine buy amount, skipping');
-        return;
-    }
-
-    console.log(`💰 Buy amount detected: ${buyAmount.toFixed(4)} SOL`);
-
-    // Check minimum buy amount
-    if (buyAmount < MIN_BUY_AMOUNT) {
-        console.log(`❌ Buy amount ${buyAmount.toFixed(4)} SOL is below minimum ${MIN_BUY_AMOUNT} SOL - SKIPPED`);
-        return;
-    }
-
-    console.log(`✅ Buy amount ${buyAmount.toFixed(4)} SOL meets minimum ${MIN_BUY_AMOUNT} SOL - LAUNCHING!`);
+    console.log(`✅ Buy amount ${buyAmountSol.toFixed(4)} SOL meets minimum ${MIN_BUY_AMOUNT} SOL - LAUNCHING!`);
 
     // Launch a new annoying coin!
     lastLaunchTime = Date.now();
-    const result = await launchAnnoyingCoin(signature, buyAmount);
+    const result = await launchAnnoyingCoin(signature, buyAmountSol);
 
     if (result.success) {
         totalLaunches++;
-        result.triggerBuyAmount = buyAmount;
+        result.triggerBuyAmount = buyAmountSol;
+        result.triggerBuyer = trade.traderPublicKey;
+
         recentLaunches.unshift(result);
-        // Keep only last 100 launches in memory
         if (recentLaunches.length > 100) {
             recentLaunches = recentLaunches.slice(0, 100);
         }
-        saveStats();
+
+        // Save to Firebase
+        await saveLaunch(result);
+        await saveStatsToFirebase();
+
         console.log(`🎉 Total launches: ${totalLaunches}`);
     }
+}
+
+function connectWebSocket() {
+    console.log('🔌 Connecting to PumpPortal WebSocket...');
+
+    ws = new WebSocket('wss://pumpportal.fun/api/data');
+
+    ws.on('open', () => {
+        console.log('✅ WebSocket connected!');
+
+        // Subscribe to trades for our target token
+        const subscribeMsg = {
+            method: 'subscribeTokenTrade',
+            keys: [targetCA]
+        };
+
+        ws.send(JSON.stringify(subscribeMsg));
+        console.log(`📡 Subscribed to trades for: ${targetCA.slice(0, 8)}...`);
+    });
+
+    ws.on('message', (data) => {
+        try {
+            const message = JSON.parse(data.toString());
+
+            // Handle trade events
+            if (message.txType === 'buy' || message.txType === 'sell') {
+                processTradeEvent(message);
+            }
+        } catch (err) {
+            // Ignore parse errors for non-JSON messages
+        }
+    });
+
+    ws.on('error', (error) => {
+        console.error('❌ WebSocket error:', error.message);
+    });
+
+    ws.on('close', () => {
+        console.log('🔌 WebSocket disconnected');
+
+        // Reconnect after 5 seconds if still monitoring
+        if (isMonitoring) {
+            console.log('🔄 Reconnecting in 5 seconds...');
+            setTimeout(connectWebSocket, 5000);
+        }
+    });
 }
 
 async function startMonitoring(ca) {
@@ -172,70 +160,29 @@ async function startMonitoring(ca) {
         return;
     }
 
-    // Load existing stats
-    loadStats();
-
     targetCA = ca;
     isMonitoring = true;
+
+    // Load existing stats from Firebase
+    await loadStatsFromFirebase();
 
     console.log(`\n🎯 Starting to monitor CA: ${ca}`);
     console.log(`⏱️  Launch cooldown: ${LAUNCH_COOLDOWN / 1000}s`);
     console.log(`💰 Minimum buy amount: ${MIN_BUY_AMOUNT} SOL`);
 
-    try {
-        const pubkey = new PublicKey(ca);
-
-        // Subscribe to account changes (logs)
-        subscriptionId = connection.onLogs(
-            pubkey,
-            async (logs, context) => {
-                if (logs.err) return;
-
-                console.log(`📨 Activity detected on ${ca.slice(0, 8)}...`);
-                await processTransaction(logs.signature);
-            },
-            'confirmed'
-        );
-
-        console.log(`✅ Subscribed to logs (ID: ${subscriptionId})`);
-
-        // Also poll for recent transactions periodically as backup
-        pollRecentTransactions(pubkey);
-
-    } catch (err) {
-        console.error('Failed to start monitoring:', err.message);
-        isMonitoring = false;
-    }
-}
-
-async function pollRecentTransactions(pubkey) {
-    if (!isMonitoring) return;
-
-    try {
-        const signatures = await connection.getSignaturesForAddress(pubkey, {
-            limit: 5
-        });
-
-        for (const sig of signatures) {
-            if (!processedSignatures.has(sig.signature)) {
-                await processTransaction(sig.signature);
-            }
-        }
-    } catch (err) {
-        console.error('Polling error:', err.message);
-    }
-
-    // Poll every 10 seconds as backup
-    setTimeout(() => pollRecentTransactions(pubkey), 10000);
+    // Connect to PumpPortal WebSocket
+    connectWebSocket();
 }
 
 function stopMonitoring() {
-    if (subscriptionId !== null) {
-        connection.removeOnLogsListener(subscriptionId);
-        subscriptionId = null;
-    }
     isMonitoring = false;
-    saveStats();
+
+    if (ws) {
+        ws.close();
+        ws = null;
+    }
+
+    saveStatsToFirebase();
     console.log('🛑 Monitoring stopped');
 }
 
@@ -250,8 +197,5 @@ function getStatus() {
         lastLaunchTime
     };
 }
-
-// Load stats on module init
-loadStats();
 
 export { startMonitoring, stopMonitoring, getStatus };
